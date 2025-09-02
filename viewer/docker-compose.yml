@@ -1,0 +1,18 @@
+services:
+  viewer:
+    build:
+      context: .
+      target: dev
+    image: control-map-viewer:dev
+    environment:
+      - NODE_ENV=development
+      - DATA_DIR=/workspace-data
+      - CHOKIDAR_USEPOLLING=1
+      - WATCHPACK_POLLING=true
+      - AUTO_COMMIT=0
+    user: "${UID}:${GID}"
+    volumes:
+      - ./:/app:cached
+      - ${HOST_DATA_DIR:-./workspace-data}:/workspace-data/data/projects:cached
+    ports:
+      - "${PORT:-3000}:3000"
