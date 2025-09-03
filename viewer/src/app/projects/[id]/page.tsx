@@ -31,6 +31,18 @@ export default async function ProjectPage({
   const categories = await deriveCategories();
 
   const { detail, notes } = await readProjectDetail(p.id);
+  const allProjects = await readProjectsYaml();
+
+  // Compute backlinks (projects that link to this one)
+  const backlinks: { id: string; title: string }[] = [];
+  for (const pr of allProjects) {
+    if (pr.id === p.id) continue;
+    const other = await readProjectDetail(pr.id);
+    const links = other.detail.links ?? [];
+    if (links.some((l: any) => l.to_id === p.id)) {
+      backlinks.push({ id: pr.id, title: pr.title });
+    }
+  }
   const jevm = p.jevm ?? detail.jevm;
   const { sum } = summarizeJEVM(jevm);
 
@@ -86,6 +98,9 @@ export default async function ProjectPage({
         project={p}
         statuses={statuses}
         categories={categories}
+        allProjects={all}
+        detail={detail}
+        backlinks={backlinks}
       />
     </div>
   );

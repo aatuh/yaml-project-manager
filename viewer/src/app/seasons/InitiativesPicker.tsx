@@ -5,17 +5,12 @@ import { useEffect, useRef, useState } from "react";
 type Project = {
   id: string;
   title: string;
-  status: "active" | "incubate" | "archive" | "graveyard" | "hypo" | "done";
+  status: string;
 };
 
-const STATUS_ORDER: Project["status"][] = [
-  "active",
-  "incubate",
-  "archive",
-  "graveyard",
-  "hypo",
-  "done",
-];
+const STATUS_ORDER: Array<
+  "active" | "incubate" | "archive" | "graveyard" | "hypo" | "done"
+> = ["active", "incubate", "archive", "graveyard", "hypo", "done"];
 const STATUS_LABEL: Record<Project["status"], string> = {
   active: "Active",
   incubate: "Incubate",
@@ -29,10 +24,12 @@ export default function InitiativesPicker({
   projects,
   name = "pids",
   defaultSelected = [],
+  resetOnSubmit = true,
 }: {
   projects: Project[];
   name?: string;
   defaultSelected?: string[];
+  resetOnSubmit?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>(defaultSelected);
@@ -47,6 +44,20 @@ export default function InitiativesPicker({
     document.addEventListener("click", onDocClick);
     return () => document.removeEventListener("click", onDocClick);
   }, []);
+
+  useEffect(() => {
+    if (!resetOnSubmit) return;
+    const el = ref.current;
+    const form = el ? (el.closest("form") as HTMLFormElement | null) : null;
+    if (!form) return;
+    function onSubmit() {
+      setSelected([]);
+      setQuery("");
+      setOpen(false);
+    }
+    form.addEventListener("submit", onSubmit);
+    return () => form.removeEventListener("submit", onSubmit);
+  }, [resetOnSubmit]);
 
   function toggle(id: string) {
     setSelected((prev) =>

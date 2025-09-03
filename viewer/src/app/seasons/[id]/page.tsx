@@ -15,6 +15,9 @@ import {
 } from "@/app/actions";
 import DeleteSeasonButton from "../DeleteSeasonButton";
 import InitiativesPicker from "../InitiativesPicker";
+import OutcomesAutoSave from "@/app/seasons/OutcomesAutoSave";
+import SubmitButton from "../SubmitButton";
+import { updateSeasonMeta } from "@/app/actions";
 
 function isMonday(iso: string) {
   const d = new Date(iso + "T00:00:00Z");
@@ -77,6 +80,46 @@ export default async function SeasonPage({
         >
           All seasons
         </Link>
+      </div>
+
+      {/* Season meta */}
+      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 bg-white dark:bg-neutral-900">
+        <h2 className="font-semibold mb-3">Season details</h2>
+        <form
+          action={async (formData) => {
+            "use server";
+            const newId = (formData.get("id") as string).trim();
+            const theme = (formData.get("theme") as string).trim();
+            await updateSeasonMeta({ oldId: id, newId, theme });
+          }}
+          className="grid grid-cols-1 md:grid-cols-4 gap-3"
+        >
+          <div className="md:col-span-1">
+            <label className="block text-xs text-neutral-500 mb-1">ID</label>
+            <input
+              name="id"
+              defaultValue={id}
+              className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 w-full"
+            />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs text-neutral-500 mb-1">Title</label>
+            <input
+              name="theme"
+              defaultValue={season.theme || ""}
+              placeholder="e.g. My new season"
+              className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 w-full"
+            />
+          </div>
+          <div className="md:col-span-1 flex items-end">
+            <button
+              type="submit"
+              className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 w-full"
+            >
+              Save
+            </button>
+          </div>
+        </form>
       </div>
 
       {!season.initiatives.some((i) => i.role === "lead") && (
@@ -160,31 +203,21 @@ export default async function SeasonPage({
                     <label className="block text-xs text-neutral-500">
                       Outcomes (up to 3)
                     </label>
-                    <input
-                      name="o1"
-                      defaultValue={i.outcomes[0] || ""}
-                      placeholder="Outcome 1"
-                      className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800"
-                    />
-                    <input
-                      name="o2"
-                      defaultValue={i.outcomes[1] || ""}
-                      placeholder="Outcome 2"
-                      className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800"
-                    />
-                    <input
-                      name="o3"
-                      defaultValue={i.outcomes[2] || ""}
-                      placeholder="Outcome 3"
-                      className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800"
+                    <OutcomesAutoSave
+                      names={["o1", "o2", "o3"]}
+                      defaults={[
+                        i.outcomes[0] || "",
+                        i.outcomes[1] || "",
+                        i.outcomes[2] || "",
+                      ]}
                     />
                     <div className="flex items-center gap-2">
-                      <button
-                        type="submit"
+                      <SubmitButton
                         className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                        pendingText="Saving…"
                       >
                         Save outcomes
-                      </button>
+                      </SubmitButton>
                       <button
                         type="submit"
                         formAction={async () => {
@@ -240,6 +273,7 @@ export default async function SeasonPage({
             <input
               name="week"
               type="date"
+              defaultValue={new Date().toISOString().slice(0, 10)}
               className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 w-full"
             />
           </div>

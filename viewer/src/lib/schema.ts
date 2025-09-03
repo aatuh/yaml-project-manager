@@ -24,8 +24,33 @@ export const ProjectDetail = Project.partial().extend({
       outcomes: z.array(z.string()).optional(),
     })
     .optional(),
+  /* Execution */
+  tasks: z.array(Task()).default([]),
+  links: z.array(ProjectLink()).default([]),
 });
 export type ProjectDetail = z.infer<typeof ProjectDetail>;
+
+/* Execution item schemas */
+export function Task() {
+  return z.object({
+    id: z.string(),
+    title: z.string().min(1),
+    state: z.enum(["todo", "doing", "blocked", "done"]).default("todo"),
+    estimate: z.number().int().min(0).optional(),
+    order: z.number().int().min(0).optional(),
+  });
+}
+export type Task = z.infer<ReturnType<typeof Task>>;
+
+export function ProjectLink() {
+  return z.object({
+    to_id: z.string(),
+    type: z
+      .enum(["depends_on", "relates_to", "part_of"]) // add hierarchy
+      .default("depends_on"),
+  });
+}
+export type ProjectLink = z.infer<ReturnType<typeof ProjectLink>>;
 
 /* Seasons */
 

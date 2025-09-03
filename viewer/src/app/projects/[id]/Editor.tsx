@@ -10,10 +10,22 @@ import {
   updateProjectProperties,
   renameProject,
   deleteProject,
+  addTask,
+  updateTask,
+  removeTask,
+  reorderTasks,
+  addLink,
+  removeLink,
+  promoteTaskToProject,
+  demoteProjectToTask,
+  createProject,
+  addTasks,
 } from "@/app/actions";
-import type { Project, StatusMeta } from "@/lib/schema";
+import type { Project, StatusMeta, ProjectDetail } from "@/lib/schema";
 import { z } from "zod";
+import { motion, Reorder } from "framer-motion";
 import { JEVM } from "@/lib/schema";
+import Link from "next/link";
 
 // Dynamically import MDEditor to avoid SSR hydration issues
 const MDEditor = dynamic(() => import("@uiw/react-md-editor"), {
@@ -43,12 +55,18 @@ export default function Editor({
   project,
   statuses,
   categories,
+  detail,
+  allProjects,
+  backlinks,
 }: {
   id: string;
   initial: string;
   project: Project;
   statuses: StatusMeta[];
   categories: string[];
+  detail: ProjectDetail;
+  allProjects: Project[];
+  backlinks: { id: string; title: string }[];
 }) {
   const router = useRouter();
   const [text, setText] = useState(initial);
@@ -241,6 +259,68 @@ export default function Editor({
         console.error("Status update failed:", error);
       }
     });
+  };
+
+  // Tasks state (client-side view based on server-provided detail)
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const tasks = detail.tasks ?? [];
+  const tasksSorted = tasks
+    .slice()
+    .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+  const sortedIds = tasksSorted.map((t: any) => t.id);
+  const [localOrder, setLocalOrder] = useState<string[]>(() => sortedIds);
+  const [serverOrder, setServerOrder] = useState<string[]>(() => sortedIds);
+  useEffect(() => {
+    const ids = tasks
+      .slice()
+      .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0))
+      .map((t: any) => t.id);
+    setLocalOrder(ids);
+    setServerOrder(ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(tasks.map((t: any) => [t.id, t.order]))]);
+  const tasksById = new Map((tasks || []).map((t: any) => [t.id, t]));
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTaskTitle, setEditingTaskTitle] = useState<string>("");
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleAddTask = async () => {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    // If user typed multiple lines (rare for input) handle as bulk
+    if (/[\r\n]/.test(newTaskTitle)) {
+      const titles = newTaskTitle
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (titles.length) await addTasks({ projectId: id, titles });
+    } else {
+      await addTask({ projectId: id, title });
+    }
+    setNewTaskTitle("");
+    window.location.reload();
+  };
+
+  const toggleTaskState = async (
+    taskId: string,
+    current: "todo" | "doing" | "blocked" | "done"
+  ) => {
+    const nextState =
+      current === "todo"
+        ? "doing"
+        : current === "doing"
+        ? "done"
+        : current === "done"
+        ? "todo"
+        : "todo";
+    await updateTask({ projectId: id, taskId, state: nextState });
+    window.location.reload();
+  };
+
+  const handleRemoveTask = async (taskId: string) => {
+    if (!confirm("Remove this task?")) return;
+    await removeTask({ projectId: id, taskId });
+    window.location.reload();
   };
 
   return (
@@ -647,6 +727,251 @@ export default function Editor({
         </div>
       </div>
 
+      {/* Tasks Section */}
+      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 bg-white dark:bg-neutral-900">
+        <h3 className="font-semibold mb-4">Tasks</h3>
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            value={newTaskTitle}
+            onChange={(e) => setNewTaskTitle(e.target.value)}
+            placeholder="Add a task…"
+            className="flex-1 px-3 py-2 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-800"
+            onPaste={async (e) => {
+              const text = e.clipboardData.getData("text");
+              if (text && /[\r\n]/.test(text)) {
+                e.preventDefault();
+                const titles = text
+                  .split(/\r?\n/)
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0);
+                if (titles.length) {
+                  await addTasks({ projectId: id, titles });
+                  setNewTaskTitle("");
+                  window.location.reload();
+                }
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAddTask();
+              }
+            }}
+          />
+          <button
+            onClick={handleAddTask}
+            className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+        <div className="text-xs text-neutral-500 mb-2">
+          Tip: paste multiple lines to add many tasks at once.
+        </div>
+
+        {tasks.length === 0 ? (
+          <div className="text-sm text-neutral-500">No tasks yet.</div>
+        ) : (
+          <Reorder.Group
+            axis="y"
+            values={localOrder}
+            onReorder={setLocalOrder}
+            className="space-y-2"
+          >
+            {localOrder
+              .map((taskId) => tasksById.get(taskId))
+              .filter(Boolean)
+              .map((t: any) => (
+                <Reorder.Item
+                  value={t.id}
+                  key={t.id}
+                  layout
+                  initial={{ opacity: 0.9, scale: 0.995 }}
+                  whileDrag={{
+                    scale: 1.02,
+                    boxShadow: "0 6px 16px rgba(0,0,0,0.12)",
+                  }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ type: "spring", stiffness: 500, damping: 35 }}
+                  className="flex items-center justify-between rounded-xl border border-neutral-200 dark:border-neutral-800 px-3 py-2 bg-white dark:bg-neutral-900"
+                  onDragStart={() => setIsDragging(true)}
+                  onDragEnd={async () => {
+                    setIsDragging(false);
+                    if (localOrder.join("|") !== serverOrder.join("|")) {
+                      await reorderTasks({
+                        projectId: id,
+                        orderedIds: localOrder,
+                      });
+                      setServerOrder(localOrder);
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span
+                      className="cursor-grab select-none text-neutral-400"
+                      title="Drag to reorder"
+                    >
+                      ⋮
+                    </span>
+                    <button
+                      onClick={() =>
+                        toggleTaskState(t.id, (t.state as any) ?? "todo")
+                      }
+                      className={`w-4 h-4 rounded border ${
+                        t.state === "done"
+                          ? "bg-green-600 border-green-600"
+                          : "border-neutral-400"
+                      }`}
+                      title="Toggle state"
+                    />
+                    {editingTaskId === t.id ? (
+                      <input
+                        autoFocus
+                        value={editingTaskTitle}
+                        onChange={(e) => setEditingTaskTitle(e.target.value)}
+                        onBlur={async () => {
+                          const title = editingTaskTitle.trim();
+                          setEditingTaskId(null);
+                          if (!title || title === t.title) return;
+                          await updateTask({
+                            projectId: id,
+                            taskId: t.id,
+                            title,
+                          });
+                          window.location.reload();
+                        }}
+                        onKeyDown={async (e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            (e.target as HTMLInputElement).blur();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            setEditingTaskId(null);
+                            setEditingTaskTitle(t.title);
+                          }
+                        }}
+                        className="px-2 py-1 border border-blue-500 rounded bg-white dark:bg-neutral-800"
+                      />
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setEditingTaskId(t.id);
+                          setEditingTaskTitle(t.title);
+                        }}
+                        className="text-left"
+                        title="Edit title"
+                      >
+                        <div className="font-medium">{t.title}</div>
+                        <div className="text-xs text-neutral-500">
+                          {t.state || "todo"}
+                          {typeof t.estimate === "number"
+                            ? ` · ${t.estimate}h`
+                            : ""}
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        const res = await promoteTaskToProject({
+                          parentId: id,
+                          taskId: t.id,
+                        });
+                        if ((res as any).id) {
+                          window.location.reload();
+                        }
+                      }}
+                      className="text-sm text-blue-600 hover:text-blue-700"
+                    >
+                      Promote
+                    </button>
+                    <button
+                      onClick={() => handleRemoveTask(t.id)}
+                      className="text-sm text-red-600 hover:text-red-700"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </Reorder.Item>
+              ))}
+          </Reorder.Group>
+        )}
+      </div>
+
+      {/* Links Section */}
+      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 bg-white dark:bg-neutral-900">
+        <h3 className="font-semibold mb-3">Links</h3>
+        {(detail.links ?? []).length === 0 ? (
+          <div className="text-sm text-neutral-500 mb-3">No links yet.</div>
+        ) : (
+          <ul className="space-y-2 mb-3">
+            {(detail.links ?? []).map((l: any, i: number) => (
+              <li
+                key={`${l.to_id}:${l.type}:${i}`}
+                className="flex items-center justify-between rounded-xl border border-neutral-200 dark:border-neutral-800 px-3 py-2"
+              >
+                <div>
+                  <div className="font-medium">
+                    <Link
+                      href={`/projects/${l.to_id}`}
+                      className="hover:underline text-blue-600 hover:text-blue-700"
+                    >
+                      {allProjects.find((p) => p.id === l.to_id)?.title ||
+                        l.to_id}
+                    </Link>
+                  </div>
+                  <div className="text-xs text-neutral-500">relates_to</div>
+                </div>
+                <button
+                  onClick={async () => {
+                    await removeLink({ projectId: id, toId: l.to_id });
+                    window.location.reload();
+                  }}
+                  className="text-sm text-red-600 hover:text-red-700"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <LinkPicker
+          allProjects={allProjects}
+          onCreateAndLink={async (title) => {
+            const res = await createProject({ title });
+            const newId = (res as any).id as string;
+            await addLink({ projectId: id, toId: newId });
+            window.location.reload();
+          }}
+          onLinkExisting={async (toId) => {
+            await addLink({ projectId: id, toId });
+            window.location.reload();
+          }}
+        />
+        {backlinks.length > 0 && (
+          <div className="mt-4">
+            <h4 className="font-medium mb-2 text-sm text-neutral-600">
+              Linked from
+            </h4>
+            <ul className="space-y-1">
+              {backlinks.map((b) => (
+                <li key={b.id}>
+                  <Link
+                    href={`/projects/${b.id}`}
+                    className="text-blue-600 hover:text-blue-700 hover:underline"
+                  >
+                    {b.title}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
       {/* Notes Section */}
       <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 p-4 bg-white dark:bg-neutral-900">
         <h3 className="font-semibold mb-4">Notes</h3>
@@ -700,6 +1025,92 @@ export default function Editor({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LinkPicker({
+  allProjects,
+  onCreateAndLink,
+  onLinkExisting,
+}: {
+  allProjects: Project[];
+  onCreateAndLink: (title: string) => Promise<void>;
+  onLinkExisting: (id: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [linking, setLinking] = useState<string | null>(null);
+
+  const items = allProjects
+    .filter((p) =>
+      query.trim()
+        ? p.title.toLowerCase().includes(query.toLowerCase()) ||
+          p.id.toLowerCase().includes(query.toLowerCase())
+        : true
+    )
+    .slice(0, 20);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search projects…"
+          className="flex-1 px-3 py-2 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-800"
+        />
+        <button
+          onClick={async () => {
+            const title = query.trim();
+            if (!title) return;
+            setCreating(true);
+            try {
+              await onCreateAndLink(title);
+              setQuery("");
+            } finally {
+              setCreating(false);
+            }
+          }}
+          disabled={creating || !query.trim()}
+          className="px-3 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {creating ? "Creating…" : "Create & Link"}
+        </button>
+      </div>
+      <div className="max-h-64 overflow-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
+        {items.length === 0 ? (
+          <div className="p-3 text-sm text-neutral-500">No matches</div>
+        ) : (
+          <ul>
+            {items.map((p) => (
+              <li
+                key={p.id}
+                className="flex items-center justify-between px-3 py-2 border-b last:border-b-0 border-neutral-200 dark:border-neutral-800"
+              >
+                <div>
+                  <div className="font-medium">{p.title}</div>
+                  <div className="text-xs text-neutral-500">{p.id}</div>
+                </div>
+                <button
+                  onClick={async () => {
+                    setLinking(p.id);
+                    try {
+                      await onLinkExisting(p.id);
+                    } finally {
+                      setLinking(null);
+                    }
+                  }}
+                  disabled={linking === p.id}
+                  className="text-sm px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                >
+                  {linking === p.id ? "Linking…" : "Link"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

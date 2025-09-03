@@ -4,7 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML, { isMap, isSeq } from "yaml";
 import simpleGit from "simple-git";
-import { Project, Season, SeasonInitiative, WeeklyLog } from "@/lib/schema";
+import {
+  Project,
+  ProjectDetail,
+  Season,
+  SeasonInitiative,
+  WeeklyLog,
+} from "@/lib/schema";
 
 /* Shared helpers */
 
@@ -116,6 +122,120 @@ export async function writeProjectNotes(id: string, notes: string) {
   const file = path.join(dir, "notes.md");
   fs.writeFileSync(file, notes, "utf-8");
   await maybeGitCommit([file], `proj:${id} notes`);
+}
+
+/** Merge and write detail into project.yaml in the project folder. */
+export async function writeProjectDetail(
+  id: string,
+  updates: Partial<ProjectDetail>
+) {
+  const root = dataRoot();
+  const dir = process.env.DATA_DIR
+    ? path.join(root, "data", "projects", "projects", id)
+    : path.join(root, "workspace-data", "projects", id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "project.yaml");
+
+  let current: ProjectDetail = {} as ProjectDetail;
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, "utf-8");
+    const parsed = YAML.parse(raw) ?? {};
+    const r = ProjectDetail.safeParse(parsed);
+    if (r.success) current = r.data;
+  }
+
+  // Merge updates with upsert semantics for tasks/links
+  let next: ProjectDetail = { ...current } as ProjectDetail;
+  const u = updates as Partial<ProjectDetail>;
+
+  if (u.focus) {
+    next.focus = { ...(current.focus ?? {}), ...(u.focus as any) } as any;
+  }
+  if (u.tasks && Array.isArray(u.tasks)) {
+    const map = new Map((current.tasks ?? []).map((t: any) => [t.id, t]));
+    for (const t of u.tasks as any[]) {
+      if (!t || typeof t.id !== "string") continue;
+      const existing = map.get(t.id) ?? {};
+      map.set(t.id, { ...existing, ...t });
+    }
+    next.tasks = Array.from(map.values());
+  }
+  if (u.links && Array.isArray(u.links)) {
+    const key = (x: any) => `${x.to_id}::${x.type || "depends_on"}`;
+    const map = new Map((current.links ?? []).map((l: any) => [key(l), l]));
+    for (const l of u.links as any[]) {
+      if (!l || typeof l.to_id !== "string") continue;
+      map.set(key(l), { to_id: l.to_id, type: l.type ?? "depends_on" });
+    }
+    next.links = Array.from(map.values());
+  }
+
+  // Shallow-merge any remaining top-level fields
+  const { tasks: _ut, links: _ul, focus: _uf, ...rest } = u as any;
+  next = { ...next, ...rest } as ProjectDetail;
+
+  // Ensure defaults via schema parse
+  const validated = ProjectDetail.parse(next);
+  fs.writeFileSync(file, prettyYaml(validated), "utf-8");
+  await maybeGitCommit([file], `proj:${id} detail update`);
+}
+
+/** Replace tasks array preserving other detail fields. */
+export async function setProjectTasks(
+  id: string,
+  tasks: NonNullable<ProjectDetail["tasks"]>
+) {
+  const root = dataRoot();
+  const dir = process.env.DATA_DIR
+    ? path.join(root, "data", "projects", "projects", id)
+    : path.join(root, "workspace-data", "projects", id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "project.yaml");
+
+  let current: ProjectDetail = {} as ProjectDetail;
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, "utf-8");
+    const parsed = YAML.parse(raw) ?? {};
+    const r = ProjectDetail.safeParse(parsed);
+    if (r.success) current = r.data;
+  }
+
+  const next: ProjectDetail = ProjectDetail.parse({
+    ...current,
+    tasks,
+  });
+
+  fs.writeFileSync(file, prettyYaml(next), "utf-8");
+  await maybeGitCommit([file], `proj:${id} tasks reorder`);
+}
+
+/** Replace links array preserving other detail fields. */
+export async function setProjectLinks(
+  id: string,
+  links: NonNullable<ProjectDetail["links"]>
+) {
+  const root = dataRoot();
+  const dir = process.env.DATA_DIR
+    ? path.join(root, "data", "projects", "projects", id)
+    : path.join(root, "workspace-data", "projects", id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "project.yaml");
+
+  let current: ProjectDetail = {} as ProjectDetail;
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, "utf-8");
+    const parsed = YAML.parse(raw) ?? {};
+    const r = ProjectDetail.safeParse(parsed);
+    if (r.success) current = r.data;
+  }
+
+  const next: ProjectDetail = ProjectDetail.parse({
+    ...current,
+    links,
+  });
+
+  fs.writeFileSync(file, prettyYaml(next), "utf-8");
+  await maybeGitCommit([file], `proj:${id} links update`);
 }
 
 /** Upsert a project into its status file, keeping existing order. */
@@ -415,6 +535,36 @@ export async function setWeeklyPicks(
   );
   fs.writeFileSync(file, prettyYaml(parsed), "utf-8");
   await maybeGitCommit([file], `season:${id} weekly ${weekStart}`);
+}
+
+export async function updateSeasonTheme(id: string, theme: string) {
+  const file = seasonYamlPath(id);
+  if (!fs.existsSync(file)) throw new Error("Season not found");
+  const raw = fs.readFileSync(file, "utf-8");
+  const parsed = YAML.parse(raw) ?? {};
+  parsed.theme = theme ?? "";
+  fs.writeFileSync(file, prettyYaml(parsed), "utf-8");
+  await maybeGitCommit([file], `season:${id} update theme`);
+}
+
+export async function renameSeason(oldId: string, newId: string) {
+  if (oldId === newId) return;
+  const from = seasonFolder(oldId);
+  const to = seasonFolder(newId);
+  if (!fs.existsSync(from)) throw new Error("Season not found");
+  fs.mkdirSync(seasonsDir(), { recursive: true });
+  if (fs.existsSync(to)) throw new Error("Target season already exists");
+  fs.renameSync(from, to);
+  await maybeGitCommit([from, to], `season: rename ${oldId} -> ${newId}`);
+
+  const ptr = currentSeasonPointer();
+  if (fs.existsSync(ptr)) {
+    const v = fs.readFileSync(ptr, "utf-8").trim();
+    if (v === oldId) {
+      fs.writeFileSync(ptr, `${newId}\n`, "utf-8");
+      await maybeGitCommit([ptr], `season:${newId} set current (rename)`);
+    }
+  }
 }
 
 /** Delete a season directory entirely. If it was current, clear pointer. */

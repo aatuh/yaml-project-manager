@@ -9,8 +9,13 @@ import {
   JEVM,
   Season,
   SeasonInitiative,
+  ProjectDetail,
 } from "@/lib/schema";
-import { readProjectsYaml, readSeason } from "@/lib/server/data";
+import {
+  readProjectsYaml,
+  readProjectDetail,
+  readSeason,
+} from "@/lib/server/data";
 import {
   writeProjectsYaml,
   writeProjectNotes,
@@ -30,6 +35,11 @@ import {
   updateInitiativeOutcomes,
   setWeeklyPicks,
   deleteSeason,
+  writeProjectDetail,
+  setProjectTasks,
+  setProjectLinks,
+  renameSeason,
+  updateSeasonTheme,
 } from "@/lib/server/write";
 
 /* Projects (existing) */
@@ -235,6 +245,241 @@ export async function createProject(input: {
   return { ok: true, id };
 }
 
+/* Tasks & Links */
+
+export async function addTask(input: {
+  projectId: string;
+  title: string;
+  estimate?: number;
+}) {
+  const id = input.projectId;
+  const title = (input.title || "").trim();
+  if (!id || !title) throw new Error("Missing project or title");
+
+  const baseId = title
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+
+  const { detail } = await readProjectDetail(id);
+  const taken = new Set((detail.tasks ?? []).map((t: any) => t.id));
+  let taskId = baseId || `task`;
+  let n = 2;
+  while (taken.has(taskId)) taskId = `${baseId || "task"}-${n++}`;
+
+  const update: Partial<ProjectDetail> = {
+    tasks: [
+      {
+        id: taskId,
+        title,
+        state: "todo",
+        estimate: input.estimate,
+        order: (detail.tasks?.length ?? 0) + 1,
+      },
+    ],
+  } as any;
+  await writeProjectDetail(id, update);
+  revalidatePath(`/projects/${id}`);
+  return { ok: true };
+}
+
+export async function updateTask(input: {
+  projectId: string;
+  taskId: string;
+  title?: string;
+  state?: "todo" | "doing" | "blocked" | "done";
+  estimate?: number | null;
+}) {
+  const { projectId, taskId } = input;
+  if (!projectId || !taskId) throw new Error("Missing ids");
+  const { detail } = await readProjectDetail(projectId);
+  const tasks = (detail.tasks ?? []).slice();
+  const idx = tasks.findIndex((t: any) => t.id === taskId);
+  if (idx < 0) throw new Error("Task not found");
+  const updated = { ...tasks[idx] } as any;
+  if (typeof input.title === "string") updated.title = input.title;
+  if (input.state) updated.state = input.state;
+  if (input.estimate === null) delete updated.estimate;
+  else if (typeof input.estimate === "number")
+    updated.estimate = input.estimate;
+  tasks[idx] = updated;
+  await writeProjectDetail(projectId, { tasks } as any);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
+export async function removeTask(input: { projectId: string; taskId: string }) {
+  const { projectId, taskId } = input;
+  if (!projectId || !taskId) throw new Error("Missing ids");
+  const { detail } = await readProjectDetail(projectId);
+  const tasks = (detail.tasks ?? []).filter((t: any) => t.id !== taskId);
+  await setProjectTasks(projectId, tasks as any);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
+export async function addLink(input: {
+  projectId: string;
+  toId: string;
+  type?: "depends_on" | "relates_to" | "part_of";
+}) {
+  const { projectId, toId, type } = input;
+  if (!projectId || !toId) throw new Error("Missing ids");
+  await writeProjectDetail(projectId, {
+    links: [{ to_id: toId, type: type ?? "relates_to" }],
+  } as Partial<ProjectDetail>);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
+export async function removeLink(input: { projectId: string; toId: string }) {
+  const { projectId, toId } = input;
+  if (!projectId || !toId) throw new Error("Missing ids");
+  const { detail } = await readProjectDetail(projectId);
+  const links = (detail.links ?? []).filter((l: any) => l.to_id !== toId);
+  await setProjectLinks(projectId, links as any);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
+export async function addTasks(input: { projectId: string; titles: string[] }) {
+  const { projectId, titles } = input;
+  if (!projectId) throw new Error("Missing projectId");
+  const lines = (titles || [])
+    .map((s) => (s || "").trim())
+    .filter((s) => s.length > 0);
+  if (!lines.length) return { ok: true };
+
+  const { detail } = await readProjectDetail(projectId);
+  const taken = new Set((detail.tasks ?? []).map((t: any) => t.id));
+  const baseFrom = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "") || "task";
+
+  let order = (detail.tasks?.length ?? 0) + 1;
+  const toAdd: any[] = [];
+  for (const title of lines) {
+    const base = baseFrom(title);
+    let id = base;
+    let n = 2;
+    while (taken.has(id)) id = `${base}-${n++}`;
+    taken.add(id);
+    toAdd.push({ id, title, state: "todo", order: order++ });
+  }
+
+  await writeProjectDetail(projectId, { tasks: toAdd } as any);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, added: toAdd.length };
+}
+
+export async function promoteTaskToProject(input: {
+  parentId: string;
+  taskId: string;
+  projectTitle?: string;
+  status?: Project["status"];
+  category?: Project["category"];
+}) {
+  const { parentId, taskId } = input;
+  if (!parentId || !taskId) throw new Error("Missing ids");
+
+  const { detail } = await readProjectDetail(parentId);
+  const task = (detail.tasks ?? []).find((t: any) => t.id === taskId) as
+    | { id: string; title: string }
+    | undefined;
+  if (!task) throw new Error("Task not found");
+
+  const title = (input.projectTitle || task.title || "").trim();
+  const proj = await createProject({
+    title,
+    status: input.status,
+    category: input.category,
+  });
+  const newId = (proj as any).id as string;
+
+  // Remove task from parent and link child project
+  const remaining = (detail.tasks ?? []).filter((t: any) => t.id !== taskId);
+  await writeProjectDetail(parentId, {
+    tasks: remaining as any,
+    links: [{ to_id: newId, type: "part_of" }],
+  } as any);
+
+  revalidatePath(`/projects/${parentId}`);
+  revalidatePath(`/projects/${newId}`);
+  return { ok: true, id: newId };
+}
+
+export async function demoteProjectToTask(input: {
+  parentId: string;
+  childProjectId: string;
+  removeChild?: boolean; // if true, archive/delete child (not implemented)
+}) {
+  const { parentId, childProjectId } = input;
+  if (!parentId || !childProjectId) throw new Error("Missing ids");
+
+  const all = await readProjectsYaml();
+  const child = all.find((p) => p.id === childProjectId);
+  if (!child) throw new Error("Child project not found");
+
+  const { detail } = await readProjectDetail(parentId);
+
+  const baseId = child.title
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+  const taken = new Set((detail.tasks ?? []).map((t: any) => t.id));
+  let taskId = baseId || `task`;
+  let n = 2;
+  while (taken.has(taskId)) taskId = `${baseId || "task"}-${n++}`;
+
+  const nextTasks = [
+    ...((detail.tasks ?? []) as any[]),
+    {
+      id: taskId,
+      title: child.title,
+      state: "todo",
+      order: (detail.tasks?.length ?? 0) + 1,
+    },
+  ];
+
+  // Remove part_of link if exists
+  const nextLinks = (detail.links ?? []).filter(
+    (l: any) => !(l.to_id === childProjectId && l.type === "part_of")
+  );
+
+  await writeProjectDetail(parentId, {
+    tasks: nextTasks as any,
+    links: nextLinks as any,
+  });
+
+  revalidatePath(`/projects/${parentId}`);
+  return { ok: true, taskId };
+}
+
+export async function reorderTasks(input: {
+  projectId: string;
+  orderedIds: string[];
+}) {
+  const { projectId, orderedIds } = input;
+  if (!projectId) throw new Error("Missing projectId");
+  const { detail } = await readProjectDetail(projectId);
+  const byId = new Map((detail.tasks ?? []).map((t: any) => [t.id, t]));
+  const next = orderedIds
+    .map((id) => byId.get(id))
+    .filter(Boolean)
+    .map((t: any, i) => ({ ...t, order: i + 1 }));
+  // Append any that were not included (defensive)
+  for (const t of detail.tasks ?? []) {
+    if (!orderedIds.includes((t as any).id)) {
+      next.push({ ...(t as any), order: next.length + 1 });
+    }
+  }
+  await setProjectTasks(projectId, next as any);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
 /* Seasons */
 
 export async function createSeason(input: {
@@ -323,4 +568,27 @@ export async function deleteSeasonAction(id: string) {
   revalidatePath("/seasons");
   revalidatePath(`/seasons/${id}`);
   redirect("/seasons");
+}
+
+export async function updateSeasonMeta(input: {
+  oldId: string;
+  newId: string;
+  theme: string;
+}) {
+  const oldId = (input.oldId || "").trim();
+  const newId = (input.newId || "").trim();
+  const theme = (input.theme || "").trim();
+  if (!oldId || !newId) throw new Error("Missing season id");
+
+  if (newId !== oldId) {
+    await renameSeason(oldId, newId);
+    await updateSeasonTheme(newId, theme);
+  } else {
+    await updateSeasonTheme(oldId, theme);
+  }
+
+  revalidatePath("/seasons");
+  revalidatePath(`/seasons/${oldId}`);
+  revalidatePath(`/seasons/${newId}`);
+  redirect(`/seasons/${newId}`);
 }
