@@ -2,8 +2,10 @@
 
 # All dotfiles
 **/.*
-!**/.gitignore
-
+**/.*
+!.gitignore
+!.dockerignore
+!.env.example
 
 # dependencies
 /node_modules
