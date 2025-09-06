@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 export const metadata = {
-  title: "Control Map Viewer",
-  description: "Visualize projects.yaml",
+  title: "YAML Project Manager",
+  description: "Manage projects in YAML files",
 };
 
 export default function RootLayout({
@@ -18,7 +18,7 @@ export default function RootLayout({
         <header className="sticky top-0 z-10 bg-white/70 dark:bg-neutral-900/60 backdrop-blur border-b border-neutral-200/60 dark:border-neutral-800">
           <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
             <Link href="/" className="hover:opacity-80 transition-opacity">
-              <h1 className="text-xl font-semibold">Control Map Viewer</h1>
+              <h1 className="text-xl font-semibold">YAML Project Manager</h1>
             </Link>
             <nav className="flex items-center gap-2">
               <Link
